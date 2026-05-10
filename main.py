@@ -228,3 +228,48 @@ def startup_embed_if_needed():
 
 # Run startup embed in background thread
 threading.Thread(target=startup_embed_if_needed, daemon=True).start()
+
+@app.route("/api/embed_all", methods=["POST"])
+def api_embed_all():
+    """Embed all records across all tables into pgvector."""
+    if not require_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    threading.Thread(target=embed_all_records, daemon=True).start()
+    return jsonify({"success": True, "status": "embedding started"})
+
+def embed_all_records():
+    """Bulk embed everything into t_embeddings for semantic search."""
+    log.info("Starting bulk embedding...")
+    total = 0
+
+    # Vacancies
+    rows = agent.sb_get("t_vacancies", limit=200)
+    for r in rows:
+        text = f"Vacancy: {r.get('address','?')}, {r.get('suburb','?')}. Size: {r.get('size_sqm','?')}sqm. Rent: ${r.get('asking_rent_pa','?')}pa. Status: {r.get('status','?')}. Vacating: {r.get('vacating_tenant','?')}."
+        agent.embed_and_store("t_vacancies", r["id"], text)
+        total += 1
+
+    # Requirements
+    rows = agent.sb_get("t_requirements", limit=200)
+    for r in rows:
+        text = f"Requirement: {r.get('company','?')} needs {r.get('size_min','?')}-{r.get('size_max','?')}sqm in {r.get('preferred_location','?')}. Budget: ${r.get('budget_pa','?')}pa. Status: {r.get('status','?')}. Timeline: {r.get('timeline','?')}."
+        agent.embed_and_store("t_requirements", r["id"], text)
+        total += 1
+
+    # Deals
+    rows = agent.sb_get("t_deals", limit=200)
+    for r in rows:
+        text = f"Deal: {r.get('tenant','?')} at {r.get('address','?')}. Landlord: {r.get('landlord','?')}. Size: {r.get('size_sqm','?')}sqm. Rent: ${r.get('rent_pa','?')}pa. Term: {r.get('term_years','?')}yrs. Status: {r.get('status','?')}."
+        agent.embed_and_store("t_deals", r["id"], text)
+        total += 1
+
+    # Properties
+    rows = agent.sb_get("t_properties", limit=200)
+    for r in rows:
+        text = f"Property: {r.get('address','?')}, {r.get('suburb','?')}. Type: {r.get('property_type','?')}. Size: {r.get('size_sqm','?')}sqm. Status: {r.get('status','?')}. Landlord: {r.get('landlord','?')}. Occupier: {r.get('occupier','?')}."
+        agent.embed_and_store("t_properties", r["id"], text)
+        total += 1
+
+    log.info("Bulk embedding complete: %d records embedded", total)
+    agent.tg_send(f"✅ Memory loaded: {total} records embedded into vector search.")
+
