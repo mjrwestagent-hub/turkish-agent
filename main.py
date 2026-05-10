@@ -211,3 +211,20 @@ def run_full_embed():
                 log.error("embed error %s %s: %s", table, row.get('id'), e)
         log.info("Embedded %s: %d rows", table, len(rows))
     log.info("Full embed complete: %d total", total)
+
+def startup_embed_if_needed():
+    """On startup, embed all data if embeddings table is empty."""
+    import time
+    time.sleep(5)  # Wait for app to be fully ready
+    try:
+        existing = agent.sb_get("t_embeddings", limit=1)
+        if existing:
+            log.info("Embeddings already exist (%d+), skipping startup embed", len(existing))
+            return
+        log.info("No embeddings found — running initial embed of all data")
+        run_full_embed()
+    except Exception as e:
+        log.error("Startup embed check failed: %s", e)
+
+# Run startup embed in background thread
+threading.Thread(target=startup_embed_if_needed, daemon=True).start()
