@@ -179,3 +179,35 @@ log.info("Turkish is awake. Briefing at %02d:00 UTC. Telegram polling active.", 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
+
+@app.route("/api/embed/all", methods=["POST"])
+def api_embed_all():
+    """Embed all records in all tables. Run once after data migration."""
+    if not require_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    threading.Thread(target=run_full_embed, daemon=True).start()
+    return jsonify({"success": True, "status": "embedding started in background"})
+
+def run_full_embed():
+    import time
+    tables = {
+        "t_vacancies": lambda r: f"Vacancy: {r.get('address','')}, {r.get('suburb','')}. Size: {r.get('size_sqm','')}sqm. Rent: ${r.get('asking_rent_pa','')}pa. Status: {r.get('status','')}. Vacating: {r.get('vacating_tenant','')}.",
+        "t_requirements": lambda r: f"Requirement: {r.get('company','')} needs {r.get('size_min','')}-{r.get('size_max','')}sqm in {r.get('preferred_location','')}. Budget: ${r.get('budget_pa','')}pa. Status: {r.get('status','')}.",
+        "t_deals": lambda r: f"Deal: {r.get('tenant','')} at {r.get('address','')}. Size: {r.get('size_sqm','')}sqm. Rent: ${r.get('rent_pa','')}pa. Term: {r.get('term_years','')}yrs. Status: {r.get('status','')}.",
+        "t_properties": lambda r: f"Property: {r.get('address','')}, {r.get('suburb','')}. Size: {r.get('size_sqm','')}sqm. Status: {r.get('status','')}. Landlord: {r.get('landlord','')}. Occupier: {r.get('occupier','')}.",
+        "t_style_profile": lambda r: f"About Michael — {r.get('category','')}/{r.get('key','')}: {r.get('value','')}",
+    }
+    total = 0
+    for table, text_fn in tables.items():
+        rows = agent.sb_get(table, limit=500)
+        for row in rows:
+            try:
+                text = text_fn(row)
+                if text and len(text.strip()) > 5:
+                    agent.embed_and_store(table, row['id'], text)
+                    total += 1
+                    time.sleep(0.05)
+            except Exception as e:
+                log.error("embed error %s %s: %s", table, row.get('id'), e)
+        log.info("Embedded %s: %d rows", table, len(rows))
+    log.info("Full embed complete: %d total", total)
