@@ -35,10 +35,18 @@ def poll_telegram():
             if chat_id != agent.TG_CHAT_ID:
                 continue
             log.info("Telegram: %s", text[:80])
-            threading.Thread(
-                target=lambda t=text: agent.tg_send(agent.run_agent(t)),
-                daemon=True
-            ).start()
+            if text.strip() == "/embed":
+                agent.tg_send("Starting memory load...")
+                threading.Thread(target=embed_all_records, daemon=True).start()
+            elif text.strip() == "/status":
+                rows = agent.sb_get("t_embeddings", limit=1)
+                count = len(agent.sb_get("t_embeddings", limit=500))
+                agent.tg_send(f"Embeddings in memory: {count}\nVacancies: {len(agent.sb_get(chr(116)+chr(95)+chr(118)+chr(97)+chr(99)+chr(97)+chr(110)+chr(99)+chr(105)+chr(101)+chr(115)))}\nRequirements: {len(agent.sb_get(chr(116)+chr(95)+chr(114)+chr(101)+chr(113)+chr(117)+chr(105)+chr(114)+chr(101)+chr(109)+chr(101)+chr(110)+chr(116)+chr(115)))}")
+            else:
+                threading.Thread(
+                    target=lambda t=text: agent.tg_send(agent.run_agent(t)),
+                    daemon=True
+                ).start()
     except Exception as e:
         log.debug("Telegram poll error: %s", e)
 
