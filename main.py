@@ -162,11 +162,44 @@ def embed_all_records():
     log.info("Bulk embed complete: %d records", total)
     agent.tg_send(f"Memory loaded: {total} records embedded into vector search.")
 
+def check_gmail():
+    """Poll Gmail, process new emails through agent, store in DB."""
+    try:
+        emails = agent.gmail_fetch_new(max_results=10)
+        if not emails:
+            return
+        log.info("Gmail: %d new emails", len(emails))
+        for email in emails:
+            # Check if already processed
+            existing = agent.sb_get("t_emails", {"gmail_id": f"eq.{email['gmail_id']}"})
+            if existing:
+                continue
+            # Store and process
+            row = agent.sb_insert("t_emails", {
+                "gmail_id": email["gmail_id"],
+                "from_address": email["from"],
+                "subject": email["subject"],
+                "body": email["body"],
+                "received_at": email["date"],
+                "processed": False,
+            })
+            if row and len(row) > 0:
+                process_email(row[0]["id"], {
+                    "from": email["from"],
+                    "from_name": email["from"].split("<")[0].strip(),
+                    "subject": email["subject"],
+                    "body": email["body"],
+                })
+                agent.gmail_mark_read(email["gmail_id"])
+    except Exception as e:
+        log.error("check_gmail: %s", e)
+
 # ── Scheduler ─────────────────────────────────────────────
 scheduler = BackgroundScheduler(timezone="UTC")
 scheduler.add_job(agent.send_daily_briefing, CronTrigger(hour=BRIEFING_HOUR, minute=0),
                   id="daily_briefing", misfire_grace_time=3600)
 scheduler.add_job(poll_telegram, "interval", seconds=3, id="telegram_poll", max_instances=1)
+scheduler.add_job(check_gmail, "interval", minutes=15, id="gmail_check", max_instances=1)
 scheduler.start()
 
 log.info("Turkish awake. Briefing at %02d:00 UTC. Telegram polling.", BRIEFING_HOUR)

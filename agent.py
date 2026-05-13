@@ -277,12 +277,23 @@ def execute_tool(name, args):
             for v in vacancies:
                 vsz = float(v.get("size_sqm") or 0)
                 if not vsz: continue
+                vaddr = v.get("address","?")
+                vrent = fmt_rent(v.get("asking_rent_pa"))
                 for r in requirements:
                     rmin = float(r.get("size_min") or 0)
-                    rmax = float(r.get("size_max") or rmin * 1.5)
-                    if rmin and rmin * 0.7 <= vsz <= rmax * 1.3:
-                        matches.append(f"• {v.get('address','?')} ({fmt_size(vsz)}) ↔ {r.get('company','?')} ({fmt_size(rmin)}-{fmt_size(rmax)})")
-            return f"{len(matches)} matches:\n" + "\n".join(matches[:10]) if matches else "No size matches found."
+                    rmax = float(r.get("size_max") or 0)
+                    if rmax == 0: rmax = rmin  # exact size requirement
+                    # Strict match: vacancy must fit within requirement range
+                    if rmin > 0 and rmin <= vsz <= rmax * 1.1:
+                        company = r.get("company","?")
+                        contact = r.get("contact_name") or "no contact"
+                        matches.append(
+                            f"• {vaddr} ({fmt_size(vsz)}, {vrent}) → "
+                            f"{company} needs {fmt_size(rmin)}-{fmt_size(rmax)} | contact: {contact}"
+                        )
+            if not matches:
+                return "No exact matches. Vacancies may be larger or smaller than active requirements."
+            return f"{len(matches)} matches:\n" + "\n".join(matches[:15])
 
         elif name == "get_staff_summary":
             name_q = args.get("name", "")
@@ -448,3 +459,173 @@ def send_daily_briefing():
     except Exception as e:
         log.error("Briefing failed: %s", e)
         tg_send(f"Briefing error: {e}")
+
+# ── Gmail Integration ─────────────────────────────────────
+GMAIL_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+GMAIL_USER          = os.environ.get("GMAIL_USER", "mjrwest.agent@gmail.com")
+
+def gmail_get_token():
+    """Get fresh Gmail access token using stored refresh token."""
+    rows = sb_get("t_settings", {"key": "eq.gmail_refresh_token"})
+    if not rows: return None
+    refresh_token = rows[0].get("value","")
+    if not refresh_token: return None
+    data = up.urlencode({
+        "client_id": GMAIL_CLIENT_ID,
+        "client_secret": GMAIL_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token"
+    }).encode()
+    req = ur.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+    try:
+        with ur.urlopen(req) as r:
+            return json.loads(r.read()).get("access_token")
+    except Exception as e:
+        log.error("Gmail token refresh: %s", e)
+        return None
+
+def gmail_fetch_new(max_results=20):
+    """Fetch unread emails from Gmail, return list of dicts."""
+    token = gmail_get_token()
+    if not token:
+        log.warning("Gmail: no access token")
+        return []
+    try:
+        # Get unread message IDs
+        q = up.urlencode({"maxResults": max_results, "q": "is:unread -category:promotions -category:social"})
+        req = ur.Request(f"https://gmail.googleapis.com/gmail/v1/users/me/messages?{q}",
+            headers={"Authorization": f"Bearer {token}"})
+        with ur.urlopen(req) as r:
+            data = json.loads(r.read())
+        messages = data.get("messages", [])
+        if not messages: return []
+
+        results = []
+        for msg in messages[:10]:
+            req2 = ur.Request(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg['id']}?format=full",
+                headers={"Authorization": f"Bearer {token}"}
+            )
+            with ur.urlopen(req2) as r2:
+                detail = json.loads(r2.read())
+            headers = {h["name"]: h["value"] for h in detail.get("payload",{}).get("headers",[])}
+
+            # Extract body
+            body = ""
+            payload = detail.get("payload", {})
+            if payload.get("body", {}).get("data"):
+                import base64
+                body = base64.urlsafe_b64decode(payload["body"]["data"] + "==").decode("utf-8", errors="ignore")
+            elif payload.get("parts"):
+                for part in payload["parts"]:
+                    if part.get("mimeType") == "text/plain" and part.get("body",{}).get("data"):
+                        import base64
+                        body = base64.urlsafe_b64decode(part["body"]["data"] + "==").decode("utf-8", errors="ignore")
+                        break
+
+            results.append({
+                "gmail_id": msg["id"],
+                "from": headers.get("From",""),
+                "subject": headers.get("Subject",""),
+                "date": headers.get("Date",""),
+                "body": body[:3000],
+                "snippet": detail.get("snippet",""),
+            })
+        return results
+    except Exception as e:
+        log.error("Gmail fetch error: %s", e)
+        return []
+
+def gmail_mark_read(gmail_id):
+    """Mark a Gmail message as read."""
+    token = gmail_get_token()
+    if not token: return
+    try:
+        body = json.dumps({"removeLabelIds": ["UNREAD"]}).encode()
+        req = ur.Request(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{gmail_id}/modify",
+            data=body, method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        )
+        ur.urlopen(req)
+    except Exception as e:
+        log.error("Gmail mark read: %s", e)
+
+# ── Gmail Integration ─────────────────────────────────────
+GMAIL_CLIENT_ID     = os.environ.get("GOOGLE_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
+
+def gmail_get_token():
+    """Get fresh Gmail access token using stored refresh token."""
+    rows = sb_get("t_settings", {"key": "eq.gmail_refresh_token"})
+    if not rows: return None
+    refresh_token = rows[0].get("value","")
+    if not refresh_token: return None
+    data = up.urlencode({
+        "client_id": GMAIL_CLIENT_ID,
+        "client_secret": GMAIL_CLIENT_SECRET,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token"
+    }).encode()
+    try:
+        req = ur.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+        with ur.urlopen(req) as r:
+            return json.loads(r.read()).get("access_token")
+    except Exception as e:
+        log.error("Gmail token refresh: %s", e)
+        return None
+
+def gmail_fetch_new(max_results=10):
+    """Fetch unread emails, return list of dicts."""
+    token = gmail_get_token()
+    if not token: return []
+    try:
+        q = up.urlencode({"maxResults": max_results, "q": "is:unread -category:promotions -category:social"})
+        req = ur.Request(f"https://gmail.googleapis.com/gmail/v1/users/me/messages?{q}",
+            headers={"Authorization": f"Bearer {token}"})
+        with ur.urlopen(req) as r:
+            messages = json.loads(r.read()).get("messages", [])
+        if not messages: return []
+        results = []
+        for msg in messages[:10]:
+            req2 = ur.Request(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg['id']}?format=full",
+                headers={"Authorization": f"Bearer {token}"})
+            with ur.urlopen(req2) as r2:
+                detail = json.loads(r2.read())
+            hdrs = {h["name"]: h["value"] for h in detail.get("payload",{}).get("headers",[])}
+            body = ""
+            import base64
+            pl = detail.get("payload", {})
+            if pl.get("body",{}).get("data"):
+                body = base64.urlsafe_b64decode(pl["body"]["data"]+"==").decode("utf-8","ignore")
+            elif pl.get("parts"):
+                for part in pl["parts"]:
+                    if part.get("mimeType")=="text/plain" and part.get("body",{}).get("data"):
+                        body = base64.urlsafe_b64decode(part["body"]["data"]+"==").decode("utf-8","ignore")
+                        break
+            results.append({
+                "gmail_id": msg["id"],
+                "from": hdrs.get("From",""),
+                "subject": hdrs.get("Subject",""),
+                "date": hdrs.get("Date",""),
+                "body": body[:3000],
+            })
+        return results
+    except Exception as e:
+        log.error("Gmail fetch: %s", e)
+        return []
+
+def gmail_mark_read(gmail_id):
+    token = gmail_get_token()
+    if not token: return
+    try:
+        body = json.dumps({"removeLabelIds":["UNREAD"]}).encode()
+        req = ur.Request(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{gmail_id}/modify",
+            data=body, method="POST",
+            headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"})
+        ur.urlopen(req)
+    except Exception as e:
+        log.error("Gmail mark read: %s", e)
